@@ -69,6 +69,25 @@ unified_pipeline/
 - CUDA-capable GPU (8GB+ VRAM for basic, 24GB+ for full pipeline)
 - HuggingFace account with access to gated models
 
+Run commands below from `unified_pipeline/`. In SageMaker Studio, clone or
+upload the complete repository so that its sibling `datasets/` and
+`sycophancy-interpretability/` directories are also available.
+
+### Installation
+
+From the repository root, install the complete dependency set before running
+the notebook or a pipeline:
+
+```bash
+pip install -r requirements.txt
+huggingface-cli login  # needed for gated models such as Gemma
+cd unified_pipeline
+```
+
+The pipeline resolves its repository location automatically. Use `--base-dir
+/path/to/Algoverse` only when running the integrated evaluator against a
+different checkout.
+
 ### Installation Verification
 
 ```bash
@@ -87,6 +106,11 @@ CUDA_VISIBLE_DEVICES=0 python run_integrated_pipeline.py \
     --robust \
     --robustness-level standard
 ```
+
+This command requires actual trained FairSteer, sycophancy, and FIRM artifacts.
+If one is unavailable, that variant is skipped instead of being reported as a
+baseline result. Start with a baseline or FIRM-only run while preparing those
+artifacts.
 
 #### FIRM Pipeline Only
 

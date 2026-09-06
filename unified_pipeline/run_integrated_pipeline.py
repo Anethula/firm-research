@@ -13,7 +13,12 @@ NO FAKE DATA - ALL REAL EVALUATIONS
 
 # CRITICAL: Apply PyTorch compilation fixes BEFORE any other imports
 import sys
-sys.path.append('/workspace/Algoverse/unified_pipeline/utils')
+from pathlib import Path
+
+# Resolve the checkout location instead of assuming /workspace/Algoverse.
+UNIFIED_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = UNIFIED_DIR.parent
+sys.path.insert(0, str(UNIFIED_DIR / "utils"))
 from pytorch_compilation_fix import apply_pytorch_compilation_fixes
 apply_pytorch_compilation_fixes()
 
@@ -23,14 +28,14 @@ import os
 import subprocess
 import yaml
 from datetime import datetime
-from pathlib import Path
 from typing import Dict, Any, List, Optional
+from copy import deepcopy
 
 class RealFourModelEvaluator:
     """Actually evaluates all four models with real evaluation data."""
     
-    def __init__(self, base_dir: str = "/workspace/Algoverse"):
-        self.base_dir = Path(base_dir)
+    def __init__(self, base_dir: Optional[str] = None):
+        self.base_dir = Path(base_dir).resolve() if base_dir else PROJECT_ROOT
         self.unified_dir = self.base_dir / "unified_pipeline"
         self.results = {}
         self.start_time = datetime.now()
@@ -46,7 +51,7 @@ class RealFourModelEvaluator:
         model_configs = {}
         
         # 1. Baseline config (always available)
-        baseline_config = base_config.copy()
+        baseline_config = deepcopy(base_config)
         baseline_config['model_variant'] = 'baseline'
         baseline_config['interventions_enabled'] = False
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -58,7 +63,7 @@ class RealFourModelEvaluator:
         
         # 2. FairSteer config (only if trained)
         if training_status.get('fairsteer', False):
-            fairsteer_config = base_config.copy()
+            fairsteer_config = deepcopy(base_config)
             fairsteer_config['model_variant'] = 'fairsteer'
             fairsteer_config['interventions_enabled'] = True
             fairsteer_config['intervention_type'] = 'fairsteer_only'
@@ -78,7 +83,7 @@ class RealFourModelEvaluator:
         
         # 3. Sycophancy config (only if trained)
         if training_status.get('sycophancy', False):
-            sycophancy_config = base_config.copy()
+            sycophancy_config = deepcopy(base_config)
             sycophancy_config['model_variant'] = 'sycophancy'
             sycophancy_config['interventions_enabled'] = True
             sycophancy_config['intervention_type'] = 'sycophancy_only'
@@ -101,7 +106,7 @@ class RealFourModelEvaluator:
             firm_model_dirs = list(self.unified_dir.glob("firm_pipeline_runs/firm_*_*/"))
             if firm_model_dirs:
                 latest_firm_dir = sorted(firm_model_dirs, key=lambda x: x.name)[-1]
-                firm_config = base_config.copy()
+                firm_config = deepcopy(base_config)
                 firm_config['model_variant'] = 'firm'
                 firm_config['interventions_enabled'] = True
                 firm_config['intervention_type'] = 'firm_complete'
@@ -220,10 +225,10 @@ class RealFourModelEvaluator:
         
         # Check if steering vectors already exist
         # Check for FairSteer files in multiple locations
-        fairsteer_files = [
-            self.base_dir / "steering_vectors.pkl",
-            self.base_dir / "fairsteer_gemma2b.pkl"
-        ]
+        safe_model_name = model_name.replace('/', '_').replace('-', '_').lower()
+        fairsteer_files = list((self.unified_dir / "steering_vectors").glob(
+            f"fairsteer_{safe_model_name}.pkl"
+        ))
         steering_vectors_path = None
         for path in fairsteer_files:
             if path.exists():
@@ -233,6 +238,12 @@ class RealFourModelEvaluator:
             print("✅ FairSteer steering vectors already exist")
             return True
         
+        trainer = self.base_dir / "fairsteer_debiasing.py"
+        if not trainer.exists():
+            print(f"❌ FairSteer trainer not found: {trainer}")
+            print("   Generate a model-specific vector file first; the comparison will not relabel a baseline as FairSteer.")
+            return False
+
         cmd = [
             "python", str(self.base_dir / "fairsteer_debiasing.py"),
             "--config", base_config_path,
@@ -670,6 +681,8 @@ def main():
                        help="Custom evaluation seeds (for --robustness-level custom)")
     parser.add_argument("--base-seed", type=int, default=42,
                        help="Base seed for single-run evaluation (when --robust not used)")
+    parser.add_argument("--base-dir", default=str(PROJECT_ROOT),
+                       help="Repository root containing unified_pipeline and datasets")
     
     args = parser.parse_args()
     
@@ -680,7 +693,7 @@ def main():
             
             from robust_evaluation_framework import RobustEvaluationFramework, EvaluationConfig
             
-            framework = RobustEvaluationFramework()
+            framework = RobustEvaluationFramework(args.base_dir)
             
             # Handle custom configuration
             if args.robustness_level == "custom":
@@ -733,7 +746,7 @@ def main():
                 torch.cuda.manual_seed(args.base_seed)
             os.environ['PYTHONHASHSEED'] = str(args.base_seed)
             
-            evaluator = RealFourModelEvaluator()
+            evaluator = RealFourModelEvaluator(args.base_dir)
             results = evaluator.run_real_four_model_evaluation(
                 args.model_config, args.model_name, args.suite
             )

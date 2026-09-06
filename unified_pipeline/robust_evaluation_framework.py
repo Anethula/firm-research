@@ -81,8 +81,9 @@ class RobustEvaluationFramework:
     with multiple training and evaluation seeds.
     """
     
-    def __init__(self, base_dir: str = "/workspace/Algoverse"):
-        self.base_dir = Path(base_dir)
+    def __init__(self, base_dir: Optional[str] = None):
+        # Keep results and data relative to this checkout by default.
+        self.base_dir = Path(base_dir).resolve() if base_dir else Path(__file__).resolve().parent.parent
         self.unified_dir = self.base_dir / "unified_pipeline"
         self.results_dir = self.unified_dir / "robust_evaluation_results"
         self.results_dir.mkdir(parents=True, exist_ok=True)
@@ -214,7 +215,7 @@ class RobustEvaluationFramework:
                         # Run evaluation with specific seeds
                         seed_result = self._evaluate_single_seed(
                             model_variant, trained_models[model_variant],
-                            train_seed, eval_seed, suite, eval_config
+                            train_seed, eval_seed, suite, eval_config, model_name
                         )
                         
                         if seed_result:
@@ -342,62 +343,62 @@ class RobustEvaluationFramework:
         
         return seeded_config_path
     
-    def _get_model_path_for_variant(self, model_variant: str, train_seed: int) -> Optional[str]:
+    def _get_model_path_for_variant(self, model_variant: str, model_name: str,
+                                    model_info: Dict[str, Any]) -> Optional[str]:
         """Get the actual model path for a specific variant and training seed."""
         
         if model_variant == "baseline":
             # Baseline model is the original pre-trained model
-            return "google/gemma-2-2b-it"
+            return model_name
             
         elif model_variant == "fairsteer":
             # FairSteer uses the baseline model + steering vectors
             # The steering vectors are applied at inference time
-            return "google/gemma-2-2b-it"
+            return model_name
             
         elif model_variant == "sycophancy":
             # Sycophancy model should be in sycophancy_pipeline_runs/*/pinpoint_tuning_results/
             sycophancy_runs = self.unified_dir / "sycophancy_pipeline_runs"
             if sycophancy_runs.exists():
                 # Find the most recent sycophancy run
-                run_dirs = [d for d in sycophancy_runs.iterdir() if d.is_dir()]
+                safe_model_name = model_name.replace('/', '_').lower()
+                run_dirs = [d for d in sycophancy_runs.iterdir()
+                            if d.is_dir() and safe_model_name in d.name.lower()]
                 if run_dirs:
                     latest_run = max(run_dirs, key=lambda x: x.stat().st_mtime)
                     # Check if pinpoint_tuning_results subdirectory exists with tokenizer
                     pinpoint_dir = latest_run / "pinpoint_tuning_results"
                     if pinpoint_dir.exists() and (pinpoint_dir / "tokenizer_config.json").exists():
                         return str(pinpoint_dir)
-            return "google/gemma-2-2b-it"  # Fallback to baseline
+            return None
             
         elif model_variant == "firm":
-            # FIRM model should be in firm_pipeline_runs/*/phase_2_causal_training/
-            firm_runs = self.unified_dir / "firm_pipeline_runs"
-            if firm_runs.exists():
-                # Find the most recent FIRM run
-                run_dirs = [d for d in firm_runs.iterdir() if d.is_dir()]
-                if run_dirs:
-                    latest_run = max(run_dirs, key=lambda x: x.stat().st_mtime)
-                    # Check if phase_2_causal_training subdirectory exists with tokenizer
-                    causal_dir = latest_run / "phase_2_causal_training"
-                    if causal_dir.exists() and (causal_dir / "tokenizer_config.json").exists():
-                        return str(causal_dir)
-            return "google/gemma-2-2b-it"  # Fallback to baseline
+            # Use the exact run produced for this seed, not the newest run from
+            # an unrelated model or earlier experiment.
+            run_path = model_info.get("model_path")
+            if run_path:
+                causal_dir = Path(run_path) / "phase_2_causal_training"
+                if causal_dir.exists() and (causal_dir / "tokenizer_config.json").exists():
+                    return str(causal_dir)
+            return None
             
         else:
             print(f"⚠️  Unknown model variant: {model_variant}")
-            return "google/gemma-2-2b-it"  # Fallback to baseline
+            return None
     
     def _apply_fairsteer_intervention(self, model, tokenizer):
         """Apply FairSteer steering vectors to the model."""
         try:
             import pickle
             import sys
-            sys.path.insert(0, '/workspace/Algoverse')
+            sys.path.insert(0, str(self.unified_dir))
             
             # Load the FairSteer steering vectors
-            fairsteer_path = "/workspace/Algoverse/fairsteer_gemma2b.pkl"
-            if not os.path.exists(fairsteer_path):
-                print(f"   ⚠️  FairSteer vectors not found at {fairsteer_path}, using baseline")
-                return model
+            model_name = getattr(model.config, "_name_or_path", "")
+            safe_model_name = model_name.replace('/', '_').replace('-', '_').lower()
+            fairsteer_path = self.unified_dir / "steering_vectors" / f"fairsteer_{safe_model_name}.pkl"
+            if not fairsteer_path.exists():
+                raise FileNotFoundError(f"FairSteer vectors not found: {fairsteer_path}")
             
             with open(fairsteer_path, 'rb') as f:
                 fairsteer_data = pickle.load(f)
@@ -406,8 +407,7 @@ class RobustEvaluationFramework:
             optimal_layer = fairsteer_data.get('optimal_layer', 15)  # Default to layer 15
             
             if not steering_vectors:
-                print(f"   ⚠️  No steering vectors found in FairSteer file, using baseline")
-                return model
+                raise ValueError(f"FairSteer vector file is empty: {fairsteer_path}")
             
             print(f"   ✅ Loaded FairSteer vectors for {len(steering_vectors)} layers, optimal: {optimal_layer}")
             
@@ -515,12 +515,11 @@ class RobustEvaluationFramework:
             return wrapped_model
             
         except Exception as e:
-            print(f"   ❌ Failed to apply FairSteer intervention: {e}")
-            return model  # Return baseline model if intervention fails
+            raise RuntimeError(f"Failed to apply FairSteer intervention: {e}") from e
     
     def _evaluate_single_seed(self, model_variant: str, model_info: Dict[str, Any],
                              train_seed: int, eval_seed: int, suite: str,
-                             eval_config: EvaluationConfig) -> Optional[SeedResult]:
+                             eval_config: EvaluationConfig, model_name: str) -> Optional[SeedResult]:
         """Evaluate a single model with specific seeds using REAL unified evaluator."""
         
         try:
@@ -545,7 +544,7 @@ class RobustEvaluationFramework:
             start_time = time.time()
             
             # Get model path from variant
-            model_path = self._get_model_path_for_variant(model_variant, train_seed)
+            model_path = self._get_model_path_for_variant(model_variant, model_name, model_info)
             if not model_path:
                 print(f"❌ No model path found for {model_variant}")
                 return None
@@ -821,7 +820,7 @@ class RobustEvaluationFramework:
 
 
 # Convenience functions for the main pipeline
-def create_robust_evaluator(base_dir: str = "/workspace/Algoverse") -> RobustEvaluationFramework:
+def create_robust_evaluator(base_dir: Optional[str] = None) -> RobustEvaluationFramework:
     """Create a robust evaluation framework instance."""
     return RobustEvaluationFramework(base_dir)
 

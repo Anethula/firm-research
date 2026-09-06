@@ -102,7 +102,17 @@ class UnifiedBiasMitigationPipeline:
         
         # Extract key settings
         self.model_name = self.config['model']['name']
-        self.base_data_path = self.config.get('base_data_path', '/workspace/Algoverse')
+        # Respect a valid explicit location, but do not let old
+        # /workspace/Algoverse config values break a Studio checkout.
+        configured_data_path = self.config.get('base_data_path')
+        repository_root = Path(__file__).resolve().parent.parent
+        if configured_data_path and Path(configured_data_path).expanduser().exists():
+            self.base_data_path = str(Path(configured_data_path).expanduser().resolve())
+        else:
+            if configured_data_path:
+                print(f"⚠️  Configured base_data_path does not exist: {configured_data_path}")
+                print(f"   Using repository root instead: {repository_root}")
+            self.base_data_path = str(repository_root)
         
         # Setup output directories
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

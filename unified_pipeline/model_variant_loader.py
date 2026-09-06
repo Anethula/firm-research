@@ -45,7 +45,9 @@ class ModelVariantLoader:
         self.tokenizer = tokenizer
         self.config = config
         # Normalize model name to fix character encoding issues
-        model_name = config.get('model_name', '')
+        model_name = config.get('model_name') or config.get('model', {}).get('name', '')
+        if not model_name:
+            raise ValueError("Variant loading requires model_name or model.name in the configuration")
         model_name = model_name.replace('–', '-').replace('—', '-')  # Replace em-dashes with hyphens
         model_name = model_name.replace('\u2013', '-').replace('\u2014', '-')  # Unicode em-dashes
         model_name = model_name.strip('"').strip("'").strip('\u201c').strip('\u201d')  # Remove quotes
@@ -77,8 +79,9 @@ class ModelVariantLoader:
         # Look for existing steering vectors
         fairsteer_path = self._find_fairsteer_path()
         if fairsteer_path is None:
-            print("   ⚠️  No FairSteer vectors found, using baseline model")
-            return self.base_model, self.tokenizer
+            raise RuntimeError(
+                "FairSteer was requested but no usable steering vectors could be found or generated"
+            )
         
         try:
             with open(fairsteer_path, 'rb') as f:
@@ -88,8 +91,7 @@ class ModelVariantLoader:
             optimal_layer = fairsteer_data.get('optimal_layer', 15)
             
             if not steering_vectors:
-                print("   ⚠️  Empty steering vectors, using baseline model")
-                return self.base_model, self.tokenizer
+                raise RuntimeError(f"FairSteer vector file is empty: {fairsteer_path}")
             
             # Create a simple steering wrapper for FairSteer
             from steer.simple_fairsteer_wrapper import SimpleFairSteerWrapper
@@ -104,8 +106,7 @@ class ModelVariantLoader:
             return das_model, self.tokenizer
             
         except Exception as e:
-            print(f"   ⚠️  Failed to load FairSteer variant: {e}")
-            return self.base_model, self.tokenizer
+            raise RuntimeError(f"Failed to load FairSteer variant: {e}") from e
     
     def _load_sycophancy_variant(self) -> Tuple[AutoModelForCausalLM, AutoTokenizer]:
         """Load sycophancy variant with pinpoint tuning."""
@@ -114,8 +115,7 @@ class ModelVariantLoader:
         # Look for sycophancy fine-tuned model
         sycophancy_path = self._find_sycophancy_path()
         if sycophancy_path is None:
-            print("   ⚠️  No sycophancy model found, using baseline")
-            return self.base_model, self.tokenizer
+            raise RuntimeError("Sycophancy variant was requested but no trained model was found")
         
         try:
             # Load the fine-tuned model
@@ -131,8 +131,7 @@ class ModelVariantLoader:
             return sycophancy_model, self.tokenizer
             
         except Exception as e:
-            print(f"   ⚠️  Failed to load sycophancy variant: {e}")
-            return self.base_model, self.tokenizer
+            raise RuntimeError(f"Failed to load sycophancy variant: {e}") from e
     
     def _load_firm_variant(self) -> Tuple[AutoModelForCausalLM, AutoTokenizer]:
         """Load FIRM variant with combined interventions."""
@@ -168,8 +167,7 @@ class ModelVariantLoader:
             return model, self.tokenizer
             
         except Exception as e:
-            print(f"   ⚠️  Failed to load FIRM variant: {e}")
-            return self.base_model, self.tokenizer
+            raise RuntimeError(f"Failed to load FIRM variant: {e}") from e
     
     def _find_fairsteer_path(self) -> Optional[str]:
         """Find model-agnostic FairSteer steering vectors file."""
@@ -177,7 +175,7 @@ class ModelVariantLoader:
         safe_model_name = self.model_name.replace('/', '_').replace('-', '_').lower()
         
         # Primary check: Look for existing model-specific steering vectors
-        steering_vectors_dir = Path(__file__).parent.parent / "steering_vectors"
+        steering_vectors_dir = Path(__file__).parent / "steering_vectors"
         primary_path = steering_vectors_dir / f"fairsteer_{safe_model_name}.pkl"
         
         if primary_path.exists():

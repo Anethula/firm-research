@@ -198,7 +198,7 @@ def main():
     if passed == total:
         print("🎉 All tests passed! Installation is working correctly.")
         print("\nNext steps:")
-        print("1. Run dataset download: cd .. && ./enhanced_pull_datasets.sh")
+        print("1. Run dataset download (if needed): cd .. && ./pull_datasets.sh")
         print("2. Authenticate with HuggingFace: huggingface-cli login")
         print("3. Run quick evaluation: python run_unified_pipeline.py --model-config configs/models/gemma-2-2b-it.yaml --suite quick_evaluation")
         return 0

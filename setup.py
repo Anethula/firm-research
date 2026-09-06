@@ -96,13 +96,13 @@ def main():
     run_command("python -m spacy download en_core_web_sm", "Installing spaCy English model")
     
     # Make scripts executable
-    run_command("chmod +x enhanced_pull_datasets.sh", "Making dataset script executable")
+    run_command("chmod +x pull_datasets.sh", "Making dataset script executable")
     
     print("\n🎉 Setup completed!")
     print("\nNext steps:")
-    print("1. Run dataset download: ./enhanced_pull_datasets.sh")
+    print("1. Run dataset download: ./pull_datasets.sh")
     print("2. Authenticate with HuggingFace: huggingface-cli login")
-    print("3. Test installation: cd unified_pipeline && python test_new_models.py")
+    print("3. Test installation: cd unified_pipeline && python test_installation.py")
     print("4. Run quick evaluation: python run_unified_pipeline.py --model-config configs/models/gemma-2-2b-it.yaml --suite quick_evaluation")
 
 if __name__ == "__main__":
