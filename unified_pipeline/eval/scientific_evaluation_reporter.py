@@ -1004,14 +1004,14 @@ class ScientificEvaluationReporter:
 
 \\section{{Limitations}}
 \\begin{{itemize}}
-{chr(10).join('\\item ' + limitation for limitation in report.limitations)}
+{chr(10).join(chr(92) + 'item ' + limitation for limitation in report.limitations)}
 \\end{{itemize}}
 
 \\section{{Reproducibility}}
 Reproducibility Score: {report.reproducibility_assessment.reproducibility_score:.3f}
 
 \\begin{{itemize}}
-{chr(10).join('\\item ' + rec for rec in report.reproducibility_assessment.recommendations)}
+{chr(10).join(chr(92) + 'item ' + rec for rec in report.reproducibility_assessment.recommendations)}
 \\end{{itemize}}
 
 \\end{{document}}

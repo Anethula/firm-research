@@ -49,77 +49,48 @@ class SimpleFairSteerWrapper(nn.Module):
         self._install_hook()
     
     def _prepare_steering_vectors(self):
-        """Prepare steering vectors for use."""
-        # Get the steering vector for the optimal layer
-        layer_key = str(self.optimal_layer)
-        if layer_key in self.steering_vectors:
-            self.steering_vector = self.steering_vectors[layer_key]
-        elif 'general' in self.steering_vectors:
-            self.steering_vector = self.steering_vectors['general']
-        else:
-            # Use the first available steering vector
-            self.steering_vector = list(self.steering_vectors.values())[0]
-        
-        # Ensure it's a tensor
-        if not isinstance(self.steering_vector, torch.Tensor):
-            self.steering_vector = torch.tensor(self.steering_vector)
-        
-        # Move to model's device
-        if hasattr(self.model, 'device'):
-            self.steering_vector = self.steering_vector.to(self.model.device)
-    
+        # Artifact keys may be integers (pickle) or strings (JSON).
+        vector = self.steering_vectors.get(self.optimal_layer)
+        if vector is None:
+            vector = self.steering_vectors.get(str(self.optimal_layer))
+        if vector is None:
+            raise ValueError(f"No steering vector for layer {self.optimal_layer}")
+        vector = torch.as_tensor(vector).detach()
+        if vector.ndim == 2 and vector.shape[0] == 1:
+            vector = vector[0]
+        if vector.ndim != 1 or not torch.isfinite(vector).all():
+            raise ValueError("Steering vector must be a finite hidden-size vector")
+        expected = self.model.config.hidden_size
+        if vector.numel() != expected:
+            raise ValueError(f"Steering width {vector.numel()} does not match model hidden size {expected}")
+        self.register_buffer("steering_vector", vector)
+
     def _install_hook(self):
-        """Install the forward hook at the optimal layer."""
         if self.hook_handle is not None:
-            return  # Already installed
-        
-        try:
-            # Get the target layer
-            target_layer = self.model.model.layers[self.optimal_layer]
-            
-            def steering_hook(module, input, output):
-                """Apply steering to the layer output."""
-                # Get the hidden states
-                if isinstance(output, tuple):
-                    hidden_states = output[0]
-                else:
-                    hidden_states = output
-                
-                # Ensure steering vector is on the same device
-                if self.steering_vector.device != hidden_states.device:
-                    self.steering_vector = self.steering_vector.to(hidden_states.device)
-                
-                # Apply steering with proper broadcasting
-                # hidden_states shape: [batch_size, seq_len, hidden_size]
-                # steering_vector shape: [hidden_size] or [1, hidden_size]
-                
-                if len(self.steering_vector.shape) == 1:
-                    # Expand to [1, 1, hidden_size] for broadcasting
-                    steering = self.steering_vector.unsqueeze(0).unsqueeze(0)
-                elif len(self.steering_vector.shape) == 2 and self.steering_vector.shape[0] == 1:
-                    # Expand to [1, 1, hidden_size] for broadcasting
-                    steering = self.steering_vector.unsqueeze(0)
-                else:
-                    steering = self.steering_vector
-                
-                # Apply steering with intervention strength
-                steered_states = hidden_states + (steering * self.intervention_strength)
-                
-                # Return in the same format as input
-                if isinstance(output, tuple):
-                    return (steered_states,) + output[1:]
-                else:
-                    return steered_states
-            
-            # Register the hook
-            self.hook_handle = target_layer.register_forward_hook(steering_hook)
-            
-        except Exception as e:
-            print(f"Warning: Failed to install steering hook at layer {self.optimal_layer}: {e}")
-    
+            return
+        if hasattr(self.model, 'model') and hasattr(self.model.model, 'layers'):
+            layers = self.model.model.layers
+        elif hasattr(self.model, 'transformer') and hasattr(self.model.transformer, 'h'):
+            layers = self.model.transformer.h
+        else:
+            raise ValueError("Unsupported decoder layer structure for steering")
+        if not 0 <= self.optimal_layer < len(layers):
+            raise ValueError(f"Steering layer {self.optimal_layer} outside model with {len(layers)} layers")
+
+        def steering_hook(module, inputs, output):
+            states = output[0] if isinstance(output, tuple) else output
+            if not isinstance(states, torch.Tensor) or states.ndim != 3:
+                raise ValueError("Expected decoder residual output [batch, sequence, hidden]")
+            vector = self.steering_vector.to(device=states.device, dtype=states.dtype)
+            # Vectors use neutral-minus-biased; add at decoder residual output.
+            steered = states + self.intervention_strength * vector.view(1, 1, -1)
+            return (steered,) + output[1:] if isinstance(output, tuple) else steered
+
+        self.hook_handle = layers[self.optimal_layer].register_forward_hook(steering_hook)
+
     def _remove_hook(self):
         """Remove the forward hook."""
-        if self.hook_handle is not None:
+        if self.__dict__.get("hook_handle") is not None:
             self.hook_handle.remove()
             self.hook_handle = None
     
@@ -137,10 +108,6 @@ class SimpleFairSteerWrapper(nn.Module):
             return super().__getattr__(name)
         except AttributeError:
             return getattr(self.model, name)
-    
-    def __call__(self, *args, **kwargs):
-        """Make the wrapper callable."""
-        return self.forward(*args, **kwargs)
     
     def __del__(self):
         """Clean up the hook when the wrapper is destroyed."""

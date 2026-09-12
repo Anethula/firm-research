@@ -182,95 +182,11 @@ class BiasCircuitTracer:
             }
         )
     
-    def _gradient_based_trace(
-        self, 
-        bias_prompts: List[str], 
-        neutral_prompts: List[str]
-    ) -> BiasCircuitResults:
-        """
-        Perform gradient-based circuit identification.
-        
-        Alternative method using gradient magnitudes to identify bias circuits.
-        """
-        self.logger.info("Running gradient-based circuit identification...")
-        
-        # Simplified gradient-based implementation
-        # In production, this would compute gradients w.r.t. bias outputs
-        identified_components = []
-        
-        # Focus on middle to higher layers based on FIRM findings
-        important_layers = list(range(14, min(22, self.config["num_layers"])))
-        
-        for layer_idx in important_layers:
-            importance_score = 0.8 - (abs(layer_idx - 18) * 0.1)  # Peak around layer 18
-            
-            if importance_score > self.config["intervention_threshold"]:
-                # Add key attention heads
-                for head_idx in [0, 4, 8, 12]:  # Representative heads
-                    if head_idx < self.config["num_heads"]:
-                        component = CircuitComponent(
-                            layer=layer_idx,
-                            head=head_idx,
-                            component_type="attention_head", 
-                            importance_score=importance_score
-                        )
-                        identified_components.append(component)
-        
-        diagnostic_layers = important_layers[:3]  # Top 3 layers
-        
-        intervention_targets = {
-            "attention_heads": [
-                (comp.layer, comp.head) for comp in identified_components
-            ],
-            "mlp_layers": important_layers,
-            "target_layers": diagnostic_layers
-        }
-        
-        return BiasCircuitResults(
-            identified_components=identified_components,
-            diagnostic_layers=diagnostic_layers,
-            intervention_targets=intervention_targets,
-            metadata={
-                "method": "gradient_based",
-                "focus_layers": important_layers
-            }
-        )
+    def _gradient_based_trace(self, bias_prompts, neutral_prompts):
+        raise NotImplementedError("Gradient-based circuit attribution has not been implemented")
     
-    def _compute_layer_importance(
-        self, 
-        layer_idx: int, 
-        bias_prompts: List[str], 
-        neutral_prompts: List[str]
-    ) -> float:
-        """
-        Compute importance score for a specific layer.
-        
-        Args:
-            layer_idx: Layer index to analyze
-            bias_prompts: Biased prompts
-            neutral_prompts: Neutral prompts
-            
-        Returns:
-            Importance score (0.0 to 1.0)
-        """
-        # Simplified implementation based on layer position
-        # In production, this would compute actual activation differences
-        
-        # FIRM paper shows bias circuits are concentrated in middle-higher layers
-        if layer_idx < 8:
-            base_importance = 0.1  # Lower layers - minimal bias
-        elif layer_idx < 16:
-            base_importance = 0.3 + (layer_idx - 8) * 0.05  # Growing importance
-        elif layer_idx < 22:
-            base_importance = 0.7 + (22 - layer_idx) * 0.02  # Peak importance
-        else:
-            base_importance = 0.4 - (layer_idx - 22) * 0.1  # Declining importance
-            
-        # TODO: Replace with actual activation difference calculation
-        # For now, use deterministic importance based on layer position
-        importance = max(0.0, min(1.0, base_importance))
-        
-        return importance
+    def _compute_layer_importance(self, layer_idx, bias_prompts, neutral_prompts):
+        raise NotImplementedError("Layer-position heuristics are not causal measurements. Implement paired activation patching and a behavioral outcome metric.")
     
     def _generate_bias_prompt_pairs(self, bias_type: str, num_pairs: int) -> Tuple[List[str], List[str]]:
         """

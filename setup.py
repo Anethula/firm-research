@@ -8,6 +8,7 @@ import os
 import sys
 import subprocess
 import platform
+import shlex
 from pathlib import Path
 
 def run_command(cmd, description):
@@ -25,8 +26,8 @@ def run_command(cmd, description):
 def check_python_version():
     """Check if Python version is compatible."""
     version = sys.version_info
-    if version.major < 3 or (version.major == 3 and version.minor < 9):
-        print(f"❌ Python 3.9+ required, found {version.major}.{version.minor}")
+    if not (3, 10) <= version[:2] < (3, 13):
+        print(f"❌ Python 3.10–3.12 required (3.11 recommended), found {version.major}.{version.minor}")
         return False
     print(f"✅ Python {version.major}.{version.minor} compatible")
     return True
@@ -80,28 +81,21 @@ def main():
     # Setup environment
     setup_environment()
     
-    # Install PyTorch
-    if has_cuda:
-        torch_cmd = "pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu118"
-    else:
-        torch_cmd = "pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cpu"
-    
-    if not run_command(torch_cmd, "Installing PyTorch"):
-        print("⚠️  PyTorch installation failed - continuing with other dependencies")
-    
-    # Install requirements
-    run_command("pip install -r requirements.txt", "Installing Python dependencies")
-    
-    # Install spaCy model
-    run_command("python -m spacy download en_core_web_sm", "Installing spaCy English model")
-    
+    # requirements.txt is the single source for the PyTorch version.
+    python = shlex.quote(sys.executable)
+    requirements = shlex.quote(str(Path(__file__).resolve().with_name("requirements.txt")))
+    if not run_command(f"{python} -m pip install -r {requirements}", "Installing Python dependencies"):
+        sys.exit(1)
+    if not run_command(f"{python} -m pip check", "Checking dependency consistency"):
+        sys.exit(1)
+
     # Make scripts executable
     run_command("chmod +x pull_datasets.sh", "Making dataset script executable")
     
     print("\n🎉 Setup completed!")
     print("\nNext steps:")
     print("1. Run dataset download: ./pull_datasets.sh")
-    print("2. Authenticate with HuggingFace: huggingface-cli login")
+    print("2. Authenticate with HuggingFace: hf auth login")
     print("3. Test installation: cd unified_pipeline && python test_installation.py")
     print("4. Run quick evaluation: python run_unified_pipeline.py --model-config configs/models/gemma-2-2b-it.yaml --suite quick_evaluation")
 

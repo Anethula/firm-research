@@ -129,6 +129,9 @@ class FIRMPipeline:
         print(f"   Model: {self.model_name}")
         print(f"   Device: {self.device}")
         
+        from research_status import require_firm_implementation
+        require_firm_implementation()
+
         # Load model
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,

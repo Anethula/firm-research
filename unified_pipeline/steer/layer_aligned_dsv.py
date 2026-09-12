@@ -181,6 +181,8 @@ class LayerAlignedDSVComputer(DSVComputer):
         Returns:
             Layer alignment validation results
         """
+        raise NotImplementedError('Layer alignment requires held-out behavioral evaluations; vector norm and position bonuses are not debiasing outcomes.')
+
         print(f"\n🔬 VALIDATING LAYER ALIGNMENT HYPOTHESIS")
         print(f"   Testing effectiveness of different layer alignment strategies...")
         

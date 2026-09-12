@@ -21,8 +21,6 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # Add parent directories to path for imports
 sys.path.append(str(Path(__file__).parent))
-from steer.das_wrapper import DynamicActivationSteering
-from train.component_registry import ComponentRegistryManager
 
 warnings.filterwarnings('ignore')
 
@@ -87,6 +85,10 @@ class ModelVariantLoader:
             with open(fairsteer_path, 'rb') as f:
                 fairsteer_data = pickle.load(f)
             
+            if fairsteer_data.get('model_name') != self.model_name:
+                raise ValueError("Steering artifact model_name does not match the requested model")
+            if fairsteer_data.get('vector_convention') != 'neutral_minus_biased':
+                raise ValueError("Legacy/unknown steering direction; regenerate vectors using train_fairsteer.py")
             steering_vectors = fairsteer_data.get('steering_vectors', {})
             optimal_layer = fairsteer_data.get('optimal_layer', 15)
             
@@ -134,43 +136,17 @@ class ModelVariantLoader:
             raise RuntimeError(f"Failed to load sycophancy variant: {e}") from e
     
     def _load_firm_variant(self) -> Tuple[AutoModelForCausalLM, AutoTokenizer]:
-        """Load FIRM variant with combined interventions."""
-        print("   🎯 Applying FIRM multi-component interventions...")
-        
-        # FIRM combines multiple techniques
-        model = self.base_model
-        
-        try:
-            # 1. Apply FairSteer if available
-            fairsteer_path = self._find_fairsteer_path()
-            if fairsteer_path:
-                print("   📍 Applying FairSteer component...")
-                with open(fairsteer_path, 'rb') as f:
-                    fairsteer_data = pickle.load(f)
-                
-                steering_vectors = fairsteer_data.get('steering_vectors', {})
-                optimal_layer = fairsteer_data.get('optimal_layer', 15)
-                
-                if steering_vectors:
-                    from steer.simple_fairsteer_wrapper import SimpleFairSteerWrapper
-                    model = SimpleFairSteerWrapper(
-                        model=model,
-                        steering_vectors=steering_vectors,
-                        optimal_layer=optimal_layer,
-                        intervention_strength=self.config.get('firm', {}).get('fairsteer_strength', 0.8)
-                    )
-            
-            # 2. Apply additional FIRM components if available
-            # (This would include other FIRM techniques when implemented)
-            
-            print("   ✓ FIRM interventions applied")
-            return model, self.tokenizer
-            
-        except Exception as e:
-            raise RuntimeError(f"Failed to load FIRM variant: {e}") from e
+        from research_status import require_firm_implementation
+        require_firm_implementation()
     
     def _find_fairsteer_path(self) -> Optional[str]:
         """Find model-agnostic FairSteer steering vectors file."""
+        explicit = self.config.get('fairsteer', {}).get('vectors_path')
+        if explicit:
+            path = Path(explicit).expanduser().resolve()
+            if not path.is_file():
+                raise FileNotFoundError(f"Steering vector file not found: {path}")
+            return str(path)
         # Generate model-specific filename based on actual model name
         safe_model_name = self.model_name.replace('/', '_').replace('-', '_').lower()
         
@@ -229,27 +205,11 @@ class ModelVariantLoader:
         return None
     
     def _find_sycophancy_path(self) -> Optional[str]:
-        """Find sycophancy fine-tuned model directory."""
-        # Check for sycophancy pipeline runs
-        possible_dirs = [
-            "sycophancy_pipeline_runs",
-            "unified_pipeline/sycophancy_pipeline_runs",
-            f"sycophancy_pipeline_runs/sycophancy_{self.model_name.split('/')[-1].lower()}_*/training",
-            f"pipeline_runs/*/training"  # Legacy structure
-        ]
-        
-        for base_path in [Path.cwd(), Path.cwd().parent, Path(__file__).parent.parent]:
-            for possible_dir in possible_dirs:
-                full_path = base_path / possible_dir
-                if full_path.exists():
-                    # Find most recent training directory
-                    if "*" in str(possible_dir):
-                        matching_dirs = list(base_path.glob(possible_dir))
-                        if matching_dirs:
-                            # Sort by modification time, get most recent
-                            latest_dir = max(matching_dirs, key=lambda x: x.stat().st_mtime)
-                            return str(latest_dir)
-                    else:
-                        return str(full_path)
-        
-        return None
+        path = self.config.get("sycophancy", {}).get("model_path")
+        if not path:
+            raise ValueError("Set sycophancy.model_path to the exact trained checkpoint; automatic latest-run selection is disabled")
+        checkpoint = Path(path).expanduser().resolve()
+        if not checkpoint.is_dir() or not any((checkpoint / name).is_file() for name in
+                ("adapter_config.json", "config.json")):
+            raise ValueError(f"Not a model/adapter checkpoint: {checkpoint}")
+        return str(checkpoint)

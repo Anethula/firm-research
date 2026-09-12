@@ -56,7 +56,7 @@ class SeedResult:
     evaluation_seed: int
     model_variant: str
     dataset_results: Dict[str, Any]
-    overall_bias_score: float
+    overall_bias_score: Optional[float]
     evaluation_time: float
     metadata: Dict[str, Any]
 
@@ -65,9 +65,9 @@ class SeedResult:
 class AggregatedResults:
     """Aggregated results across multiple seeds."""
     model_variant: str
-    mean_bias_score: float
-    std_bias_score: float
-    confidence_interval: Tuple[float, float]
+    mean_bias_score: Optional[float]
+    std_bias_score: Optional[float]
+    confidence_interval: Optional[Tuple[float, float]]
     dataset_means: Dict[str, float]
     dataset_stds: Dict[str, float]
     n_evaluations: int
@@ -143,6 +143,9 @@ class RobustEvaluationFramework:
         print("   ROBUST MULTI-SEED FOUR-MODEL EVALUATION")
         print(f"🔬 {'='*80}")
         
+        from research_status import require_firm_implementation
+        require_firm_implementation()
+
         # Get evaluation configuration
         if robustness_level == "custom" and custom_config:
             eval_config = custom_config
@@ -163,6 +166,7 @@ class RobustEvaluationFramework:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_dir = self.results_dir / f"robust_eval_{robustness_level}_{timestamp}"
         run_dir.mkdir(exist_ok=True)
+        self.current_run_dir = run_dir
         
         # Save evaluation configuration
         config_path = run_dir / "evaluation_config.json"
@@ -196,6 +200,13 @@ class RobustEvaluationFramework:
                 base_config_path, model_name, train_seed
             )
             
+            failed_training = [name for name in all_model_results
+                               if not trained_models.get(name, {}).get("success")]
+            if failed_training:
+                failure = {"status": "failed", "stage": "training", "training_seed": train_seed,
+                           "failed_variants": failed_training, "training_results": trained_models}
+                (run_dir / "failure.json").write_text(json.dumps(failure, indent=2, default=str))
+                raise RuntimeError(f"Training failed for {failed_training}; see {run_dir / 'failure.json'}")
             for eval_seed in eval_config.evaluation_seeds:
                 print(f"\n📊 Evaluation Seed: {eval_seed}")
                 print("-" * 40)
@@ -220,12 +231,19 @@ class RobustEvaluationFramework:
                         
                         if seed_result:
                             all_model_results[model_variant].append(seed_result)
-                            print(f"✅ {model_variant}: bias_score={seed_result.overall_bias_score:.4f}")
+                            print(f"✅ {model_variant}: {seed_result.dataset_results}")
                         else:
-                            print(f"❌ {model_variant}: evaluation failed")
+                            failure = {"status": "failed", "stage": "evaluation", "variant": model_variant,
+                                       "training_seed": train_seed, "evaluation_seed": eval_seed}
+                            (run_dir / "failure.json").write_text(json.dumps(failure, indent=2))
+                            raise RuntimeError(f"Evaluation failed; see {run_dir / 'failure.json'}")
                     else:
                         print(f"⚠️  {model_variant}: model training failed, skipping")
         
+        expected = len(eval_config.training_seeds) * len(eval_config.evaluation_seeds)
+        if not expected or any(len(results) != expected for results in all_model_results.values()):
+            raise RuntimeError("Incomplete evaluation grid; cannot report a successful four-variant run")
+
         # Aggregate results across seeds
         print(f"\n📈 {'='*60}")
         print("   AGGREGATING MULTI-SEED RESULTS")
@@ -242,7 +260,7 @@ class RobustEvaluationFramework:
                 for dataset, mean_score in aggregated.dataset_means.items():
                     std_score = aggregated.dataset_stds.get(dataset, 0.0)
                     print(f"      {dataset}: {mean_score:.4f} ± {std_score:.4f}")
-                print(f"   🎯 Reference Summary: {aggregated.mean_bias_score:.4f} ± {aggregated.std_bias_score:.4f} (harmonic mean)")
+
                 print(f"   📊 Evaluations: {aggregated.n_evaluations}")
                 print(f"   ⚠️  Use dataset-specific scores for analysis, NOT summary!")
         
@@ -387,136 +405,12 @@ class RobustEvaluationFramework:
             return None
     
     def _apply_fairsteer_intervention(self, model, tokenizer):
-        """Apply FairSteer steering vectors to the model."""
-        try:
-            import pickle
-            import sys
-            sys.path.insert(0, str(self.unified_dir))
-            
-            # Load the FairSteer steering vectors
-            model_name = getattr(model.config, "_name_or_path", "")
-            safe_model_name = model_name.replace('/', '_').replace('-', '_').lower()
-            fairsteer_path = self.unified_dir / "steering_vectors" / f"fairsteer_{safe_model_name}.pkl"
-            if not fairsteer_path.exists():
-                raise FileNotFoundError(f"FairSteer vectors not found: {fairsteer_path}")
-            
-            with open(fairsteer_path, 'rb') as f:
-                fairsteer_data = pickle.load(f)
-            
-            steering_vectors = fairsteer_data.get('steering_vectors', {})
-            optimal_layer = fairsteer_data.get('optimal_layer', 15)  # Default to layer 15
-            
-            if not steering_vectors:
-                raise ValueError(f"FairSteer vector file is empty: {fairsteer_path}")
-            
-            print(f"   ✅ Loaded FairSteer vectors for {len(steering_vectors)} layers, optimal: {optimal_layer}")
-            
-            # Create wrapper class that applies steering during forward pass
-            class FairSteerWrapper(torch.nn.Module):
-                def __init__(self, base_model, steering_vectors, optimal_layer, intervention_strength=1.0):
-                    super().__init__()
-                    self.base_model = base_model
-                    self.steering_vectors = steering_vectors
-                    self.optimal_layer = optimal_layer
-                    self.intervention_strength = intervention_strength
-                    self.device = next(base_model.parameters()).device
-                    
-                    # Convert steering vector to tensor
-                    if optimal_layer in steering_vectors:
-                        self.steering_vector = torch.tensor(
-                            steering_vectors[optimal_layer], 
-                            device=self.device, 
-                            dtype=torch.float16
-                        )
-                    else:
-                        self.steering_vector = None
-                        print(f"   ⚠️  Optimal layer {optimal_layer} not in steering vectors")
-                
-                def forward(self, *args, **kwargs):
-                    # Apply steering hook during forward pass
-                    if self.steering_vector is not None:
-                        # Register temporary hook on the optimal layer
-                        def steering_hook(module, input, output):
-                            if isinstance(output, torch.Tensor) and output.dim() == 3:
-                                # Create a new tensor with steering applied to last token position
-                                modified_output = output.clone()
-                                modified_output[:, -1, :] += self.intervention_strength * self.steering_vector
-                                return modified_output
-                            elif isinstance(output, tuple) and len(output) > 0 and isinstance(output[0], torch.Tensor) and output[0].dim() == 3:
-                                # Handle case where output is a tuple (hidden_states, ...)
-                                modified_hidden = output[0].clone()
-                                modified_hidden[:, -1, :] += self.intervention_strength * self.steering_vector
-                                return (modified_hidden,) + output[1:]
-                            return output
-                        
-                        # Find and hook the target layer
-                        target_layer = None
-                        for name, module in self.base_model.named_modules():
-                            if f"layers.{self.optimal_layer}" in name and ("self_attn" in name or "mlp" in name):
-                                target_layer = module
-                                break
-                        
-                        if target_layer is not None:
-                            handle = target_layer.register_forward_hook(steering_hook)
-                            try:
-                                outputs = self.base_model(*args, **kwargs)
-                            finally:
-                                handle.remove()
-                            return outputs
-                    
-                    # Fallback to base model if no steering
-                    return self.base_model(*args, **kwargs)
-                
-                def generate(self, *args, **kwargs):
-                    # For generation, we need to hook into the model layers
-                    if self.steering_vector is not None:
-                        # Register hook on the optimal layer during generation
-                        def steering_hook(module, input, output):
-                            if isinstance(output, torch.Tensor) and output.dim() == 3:
-                                # Create a new tensor with steering applied to last token position
-                                modified_output = output.clone()
-                                modified_output[:, -1, :] += self.intervention_strength * self.steering_vector
-                                return modified_output
-                            elif isinstance(output, tuple) and len(output) > 0 and isinstance(output[0], torch.Tensor) and output[0].dim() == 3:
-                                # Handle case where output is a tuple (hidden_states, ...)
-                                modified_hidden = output[0].clone()
-                                modified_hidden[:, -1, :] += self.intervention_strength * self.steering_vector
-                                return (modified_hidden,) + output[1:]
-                            return output
-                        
-                        # Find the right layer to hook
-                        target_layer = None
-                        for name, module in self.base_model.named_modules():
-                            if f"layers.{self.optimal_layer}" in name and "self_attn" in name:
-                                target_layer = module
-                                break
-                        
-                        if target_layer is not None:
-                            handle = target_layer.register_forward_hook(steering_hook)
-                            try:
-                                result = self.base_model.generate(*args, **kwargs)
-                            finally:
-                                handle.remove()
-                            return result
-                    
-                    return self.base_model.generate(*args, **kwargs)
-                
-                def __getattr__(self, name):
-                    # Delegate all other attributes to the base model
-                    try:
-                        return super().__getattr__(name)
-                    except AttributeError:
-                        return getattr(self.base_model, name)
-            
-            # Wrap the model with FairSteer intervention
-            wrapped_model = FairSteerWrapper(model, steering_vectors, optimal_layer)
-            print(f"   🎯 FairSteer intervention applied with strength 1.0 on layer {optimal_layer}")
-            
-            return wrapped_model
-            
-        except Exception as e:
-            raise RuntimeError(f"Failed to apply FairSteer intervention: {e}") from e
-    
+        from model_variant_loader import ModelVariantLoader
+        name = getattr(model.config, "_name_or_path", "")
+        return ModelVariantLoader(model, tokenizer, {
+            "model_name": name, "model_variant": "fairsteer"
+        }).load_variant_model()[0]
+
     def _evaluate_single_seed(self, model_variant: str, model_info: Dict[str, Any],
                              train_seed: int, eval_seed: int, suite: str,
                              eval_config: EvaluationConfig, model_name: str) -> Optional[SeedResult]:
@@ -561,7 +455,7 @@ class RobustEvaluationFramework:
                 
                 model = AutoModelForCausalLM.from_pretrained(
                     model_path,
-                    torch_dtype=torch.float16,
+                    torch_dtype=torch.float16 if device == "cuda" else torch.float32,
                     device_map="auto" if device == "cuda" else None,
                     trust_remote_code=True
                 )
@@ -575,7 +469,8 @@ class RobustEvaluationFramework:
                     # Sycophancy model is already loaded from the fine-tuned path
                 elif model_variant == "firm":
                     print("   🛠️ Loading FIRM multi-component model...")
-                    # FIRM model is already loaded from the trained path
+                    from research_status import require_firm_implementation
+                    require_firm_implementation()
                 
                 print(f"   ✅ Model loaded successfully on {device}")
                 
@@ -592,6 +487,14 @@ class RobustEvaluationFramework:
             with open(dataset_config_path, 'r') as f:
                 dataset_config = yaml.safe_load(f)
             
+            from copy import deepcopy
+            dataset_config = deepcopy(dataset_config)
+            for dataset_name, settings in dataset_config.get("dataset_configs", {}).items():
+                settings["seed"] = eval_seed
+                settings["sample_size"] = eval_config.dataset_sample_sizes.get(
+                    dataset_name, eval_config.dataset_sample_sizes.get("default", settings.get("sample_size")))
+            dataset_config.setdefault("integration", {})["skip_failed_datasets"] = False
+
             # Create REAL evaluator and run evaluation
             print(f"   🧮 Initializing unified evaluator...")
             evaluator = UnifiedBiasEvaluator(dataset_config, str(self.base_dir))
@@ -599,7 +502,8 @@ class RobustEvaluationFramework:
             # Run REAL comprehensive evaluation
             print(f"   🚀 Starting real evaluation on {suite} suite...")
             evaluation_results = evaluator.run_comprehensive_evaluation(
-                model, tokenizer, suite_name=suite
+                model, tokenizer, suite_name=suite,
+                output_dir=str(self.current_run_dir / "raw" / f"{model_variant}_train{train_seed}_eval{eval_seed}")
             )
             
             evaluation_time = time.time() - start_time
@@ -615,40 +519,34 @@ class RobustEvaluationFramework:
                     
                     # Extract the PRIMARY metric for each dataset (not aggregated!)
                     if dataset_name == "CrowsPairs":
-                        dataset_results[dataset_name] = metrics.get("crows_pairs_bias_score", 0.0)
+                        dataset_results[dataset_name] = metrics["crows_pairs_bias_score"]
                     elif dataset_name == "StereoSet":
-                        dataset_results[dataset_name] = metrics.get("stereoset_bias_score", 0.0)
+                        dataset_results[dataset_name] = metrics["stereoset_bias_score"]
                     elif dataset_name == "WinoBias":
-                        dataset_results[dataset_name] = metrics.get("winobias_accuracy", 0.0)
+                        dataset_results[dataset_name] = metrics["winobias_accuracy"]
                     elif dataset_name == "TruthfulQA":
-                        dataset_results[dataset_name] = metrics.get("truthfulqa_truthful_pct", 0.0)
+                        dataset_results[dataset_name] = metrics["truthfulqa_truthful_pct"]
                     elif dataset_name == "BBQ":
-                        dataset_results[dataset_name] = metrics.get("bbq_accuracy", 0.0)
+                        dataset_results[dataset_name] = metrics["bbq_accuracy"]
                     elif dataset_name == "SEAT":
-                        dataset_results[dataset_name] = metrics.get("seat_avg_effect_size", 0.0)
+                        dataset_results[dataset_name] = metrics["seat_avg_effect_size"]
                     elif dataset_name == "BOLD":
-                        dataset_results[dataset_name] = metrics.get("bold_sentiment_bias", 0.0)
+                        dataset_results[dataset_name] = metrics["bold_sentiment_bias"]
                     else:
                         # Use first available metric as primary
                         if metrics:
                             primary_metric = list(metrics.keys())[0]
                             dataset_results[dataset_name] = metrics[primary_metric]
             
-            # Calculate overall score as HARMONIC MEAN (not arithmetic mean!)
-            if dataset_results:
-                # Include small BOLD scores (> 0.0001) to capture sentiment bias improvements
-                valid_scores = [score for score in dataset_results.values() if score > 0.0001]
-                if valid_scores:
-                    overall_score = len(valid_scores) / sum(1/score for score in valid_scores)
-                else:
-                    overall_score = 0.0
-            else:
-                overall_score = 0.0
-            
-            print(f"✅ [REAL EVAL] {model_variant}: {len(dataset_results)} datasets evaluated in {evaluation_time:.1f}s")
-            print(f"   📊 Dataset scores: {dataset_results}")
-            print(f"   🎯 Overall harmonic mean: {overall_score:.4f}")
-            
+            if not dataset_results:
+                raise RuntimeError("Evaluation returned no dataset metrics")
+            if not all(isinstance(value, (int, float)) and np.isfinite(value)
+                       for value in dataset_results.values()):
+                raise RuntimeError("Evaluation returned invalid/nonfinite metrics")
+            # Bias scores, accuracy, percentages and effect sizes have no common scale.
+            overall_score = None
+            print(f"Dataset metrics for {model_variant}: {dataset_results}")
+
             # Clean up GPU memory
             del model
             del tokenizer
@@ -707,33 +605,10 @@ class RobustEvaluationFramework:
                     
                     print(f"   📊 {dataset}: {mean_score:.4f} ± {std_score:.4f}")
         
-        # Use harmonic mean of available dataset scores as overall summary
-        # (NOT a meaningful metric, just for backward compatibility)
-        # Include all scores > 0.0001 to capture small BOLD sentiment bias scores
-        available_means = [score for score in dataset_means.values() if score > 0.0001]
-        if available_means and len(available_means) > 0:
-            # Harmonic mean prevents any single bad score from dominating
-            harmonic_mean = len(available_means) / sum(1/score for score in available_means)
-            harmonic_std = np.std([r.overall_bias_score for r in seed_results], ddof=1) if len(seed_results) > 1 else 0.0
-            
-            if len(seed_results) > 1:
-                overall_scores = [r.overall_bias_score for r in seed_results]
-                overall_ci = stats.t.interval(
-                    eval_config.confidence_level,
-                    len(overall_scores)-1,
-                    loc=harmonic_mean,
-                    scale=stats.sem(overall_scores)
-                )
-            else:
-                overall_ci = (harmonic_mean, harmonic_mean)
-        else:
-            harmonic_mean = 0.0
-            harmonic_std = 0.0
-            overall_ci = (0.0, 0.0)
-        
-        print(f"   🎯 Summary (harmonic mean): {harmonic_mean:.4f} ± {harmonic_std:.4f}")
-        print(f"   ⚠️  NOTE: Overall score is for reference only - use dataset-specific metrics!")
-        
+        # No cross-dataset composite or confidence interval is defined.
+        harmonic_mean = harmonic_std = None
+        overall_ci = None
+
         return AggregatedResults(
             model_variant=model_variant,
             mean_bias_score=harmonic_mean,  # Harmonic mean for compatibility
@@ -749,37 +624,11 @@ class RobustEvaluationFramework:
     def _compute_statistical_significance(self, aggregated_results: Dict[str, AggregatedResults],
                                         eval_config: EvaluationConfig) -> Dict[str, Any]:
         """Compute statistical significance tests between models."""
-        significance_results = {}
-        
-        models = list(aggregated_results.keys())
-        
-        for i, model1 in enumerate(models):
-            for model2 in models[i+1:]:
-                if model1 in aggregated_results and model2 in aggregated_results:
-                    scores1 = [r.overall_bias_score for r in aggregated_results[model1].seed_results]
-                    scores2 = [r.overall_bias_score for r in aggregated_results[model2].seed_results]
-                    
-                    comparison_key = f"{model1}_vs_{model2}"
-                    
-                    # T-test
-                    if len(scores1) > 1 and len(scores2) > 1:
-                        t_stat, p_value = stats.ttest_ind(scores1, scores2)
-                        
-                        # Effect size (Cohen's d)
-                        pooled_std = np.sqrt(((len(scores1)-1)*np.var(scores1, ddof=1) + 
-                                            (len(scores2)-1)*np.var(scores2, ddof=1)) / 
-                                           (len(scores1) + len(scores2) - 2))
-                        effect_size = (np.mean(scores1) - np.mean(scores2)) / pooled_std if pooled_std > 0 else 0
-                        
-                        significance_results[comparison_key] = {
-                            "t_statistic": t_stat,
-                            "p_value": p_value,
-                            "effect_size": effect_size,
-                            "significant": p_value < (1 - eval_config.confidence_level)
-                        }
-        
-        return significance_results
-    
+        return {
+            "status": "not_computed",
+            "reason": "Use per-dataset paired item outcomes and training-seed clusters; repeated evaluation subsets are not independent replicates."
+        }
+
     def _estimate_total_time(self, eval_config: EvaluationConfig) -> float:
         """Estimate total evaluation time in minutes."""
         # Rough estimates based on typical evaluation times
@@ -795,28 +644,16 @@ class RobustEvaluationFramework:
         
         return total_training_time + total_evaluation_time
     
-    def _generate_summary_report(self, aggregated_results: Dict[str, AggregatedResults],
-                               statistical_results: Dict[str, Any], output_dir: Path) -> None:
-        """Generate a markdown summary report."""
-        report_path = output_dir / "summary_report.md"
-        
-        with open(report_path, 'w') as f:
-            f.write("# Robust Multi-Seed Evaluation Report\n\n")
-            
-            f.write("## Results Summary\n\n")
-            for model, results in aggregated_results.items():
-                f.write(f"### {model.upper()}\n")
-                f.write(f"- **Mean Bias Score**: {results.mean_bias_score:.4f} ± {results.std_bias_score:.4f}\n")
-                f.write(f"- **95% Confidence Interval**: [{results.confidence_interval[0]:.4f}, {results.confidence_interval[1]:.4f}]\n")
-                f.write(f"- **Number of Evaluations**: {results.n_evaluations}\n\n")
-            
-            f.write("## Statistical Significance\n\n")
-            for comparison, stats in statistical_results.items():
-                significance = "✅ Significant" if stats["significant"] else "❌ Not Significant"
-                f.write(f"### {comparison.replace('_', ' ').title()}\n")
-                f.write(f"- **P-value**: {stats['p_value']:.6f}\n")
-                f.write(f"- **Effect Size**: {stats['effect_size']:.4f}\n")
-                f.write(f"- **Significance**: {significance}\n\n")
+    def _generate_summary_report(self, aggregated_results, statistical_results, output_dir):
+        with open(output_dir / "summary_report.md", "w") as stream:
+            stream.write("# Exploratory multi-seed evaluation\n\n")
+            stream.write("No publication validity or significance is implied by the run preset.\n\n")
+            for name, result in aggregated_results.items():
+                stream.write(f"## {name}\n\n{result.n_evaluations} evaluation cells.\n\n")
+                for dataset, mean in result.dataset_means.items():
+                    stream.write(f"- {dataset}: {mean:.6g}; descriptive cell SD {result.dataset_stds[dataset]:.6g}\n")
+                stream.write("\n")
+            stream.write(statistical_results["reason"] + "\n")
 
 
 # Convenience functions for the main pipeline

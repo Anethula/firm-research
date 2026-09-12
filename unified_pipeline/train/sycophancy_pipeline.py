@@ -29,15 +29,18 @@ class SycophancyPipelineManager:
     sycophancy-interpretability repository without modifying their code.
     """
     
-    def __init__(self, sycophancy_repo_path: str = "/workspace/Algoverse/sycophancy-interpretability"):
-        self.sycophancy_dir = Path(sycophancy_repo_path)
-        self.unified_dir = Path("/workspace/Algoverse/unified_pipeline")
+    def __init__(self, sycophancy_repo_path: Optional[str] = None):
+        self.unified_dir = Path(__file__).resolve().parents[1]
+        self.sycophancy_dir = Path(sycophancy_repo_path).resolve() if sycophancy_repo_path else self.unified_dir.parent / "sycophancy-interpretability"
         self.output_dir = None
         
         # Validate sycophancy-interpretability exists
         if not self.sycophancy_dir.exists():
             raise RuntimeError(f"Sycophancy-interpretability directory not found at {self.sycophancy_dir}")
         
+        for script in ("path_patching/path_patching_hf.py", "pinpoint_tuning/train.py"):
+            if not (self.sycophancy_dir / script).is_file():
+                raise FileNotFoundError(f"External sycophancy implementation missing: {self.sycophancy_dir / script}")
         print(f"Initialized SycophancyPipelineManager")
         print(f"Sycophancy repo: {self.sycophancy_dir}")
     
@@ -146,7 +149,7 @@ class SycophancyPipelineManager:
             data_path = self.sycophancy_dir / "path_patching" / "datasets" / "path_patching_data.jsonl"
             if data_path.exists():
                 print("⚠️  Found original dataset, using Gemma-compatible version...")
-                data_path = gemma_data_path  # Use the one we already created
+                # Use the existing original dataset, not a missing Gemma-specific file.
             else:
                 print("⚠️  Path patching data not found, using fallback...")
                 # Create minimal path patching data if needed
@@ -310,7 +313,6 @@ class SycophancyPipelineManager:
             
             # Set up single-GPU distributed training environment
             env['WANDB_DISABLED'] = 'true'
-            env['CUDA_VISIBLE_DEVICES'] = '0'
             env['MASTER_ADDR'] = 'localhost'
             env['MASTER_PORT'] = '29500'
             env['WORLD_SIZE'] = '1'
@@ -459,22 +461,11 @@ class SycophancyPipelineManager:
         print(f"✓ Created minimal path patching data: {data_path}")
         return str(data_path)
     
-    def _extract_path_patching_results(self, output_lines: List[str], results_path: str) -> None:
-        """Extract path patching results from output and save."""
-        # Parse their output for results (this is a simplified version)
-        # In reality, their script might save results in a different format/location
-        
-        # Create placeholder results structure
-        results = {
-            "path_patching_results": "extracted_from_sycophancy_interpretability",
-            "identified_heads": [],
-            "importance_scores": {},
-            "source": "sycophancy-interpretability path_patching_hf.py"
-        }
-        
-        # Save results
-        with open(results_path, 'w') as f:
-            json.dump(results, f, indent=2)
+    def _extract_path_patching_results(self, output_lines, results_path):
+        raise NotImplementedError(
+            "The external path-patching artifact importer is not implemented. "
+            "Cannot create an empty head registry and report successful pinpoint tuning."
+        )
     
     def _get_model_type_for_training(self, model_name: str) -> str:
         """Get model type for their training system."""

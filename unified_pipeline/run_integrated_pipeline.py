@@ -179,20 +179,19 @@ class RealFourModelEvaluator:
             
             return_code = process.poll()
             
-            # Look for evaluation results in unified pipeline runs directory
-            unified_runs_dir = self.unified_dir / "unified_pipeline_runs"
+            # Only accept a directory printed by this invocation, never a prior run.
             result_files = []
             evaluation_data = None
-            
-            if unified_runs_dir.exists():
-                # Find the most recent evaluation results
-                run_dirs = sorted([d for d in unified_runs_dir.iterdir() if d.is_dir()], reverse=True)
-                for run_dir in run_dirs[:5]:  # Check last 5 runs
-                    potential_files = list(run_dir.glob("**/evaluation_results.json"))
-                    if potential_files:
-                        result_files.extend(potential_files)
-                        break
-            
+            for line in stdout_lines:
+                marker = "Check the output directory for detailed results: "
+                if marker in line:
+                    current_run = Path(line.split(marker, 1)[1].strip())
+                    if not current_run.is_absolute():
+                        current_run = self.unified_dir / current_run
+                    result_files = list(current_run.glob("evaluation/**/evaluation_results.json"))
+            if return_code != 0:
+                result_files = []
+
             if result_files:
                 try:
                     with open(result_files[0], 'r') as f:
@@ -202,7 +201,7 @@ class RealFourModelEvaluator:
                     print(f"⚠️  Could not load evaluation results: {e}")
             
             return {
-                "success": return_code == 0,
+                "success": return_code == 0 and bool(evaluation_data and evaluation_data.get("dataset_results")),
                 "stdout": ''.join(stdout_lines),
                 "returncode": return_code,
                 "output_dir": str(output_dir),
@@ -245,8 +244,8 @@ class RealFourModelEvaluator:
             return False
 
         cmd = [
-            "python", str(self.base_dir / "fairsteer_debiasing.py"),
-            "--config", base_config_path,
+            sys.executable, str(self.unified_dir / "train_fairsteer.py"),
+            "--config", str(Path(base_config_path).resolve()),
             "--train-only"  # Only train, don't evaluate
         ]
         
@@ -349,8 +348,8 @@ class RealFourModelEvaluator:
         print(f"{'='*60}")
         
         cmd = [
-            "python", str(self.unified_dir / "firm_pipeline.py"),
-            "--model-config", base_config_path,
+            sys.executable, str(self.unified_dir / "firm_pipeline.py"),
+            "--model-config", str(Path(base_config_path).resolve()),
             "--model-name", model_name,
             "--suite", "comprehensive"
         ]
@@ -535,6 +534,8 @@ class RealFourModelEvaluator:
         """Run real evaluation of all four models with optimizations."""
         
         print("🔬 " + "="*70)
+        from research_status import require_firm_implementation
+        require_firm_implementation()
         print("   OPTIMIZED REAL FOUR-MODEL EVALUATION PIPELINE")
         print("🔬 " + "="*70)
         print(f"🎯 Base Model: {model_name}")
@@ -684,9 +685,19 @@ def main():
     parser.add_argument("--base-dir", default=str(PROJECT_ROOT),
                        help="Repository root containing unified_pipeline and datasets")
     
+    parser.add_argument("--preflight-only", action="store_true", help="Check environment without training or evaluating")
     args = parser.parse_args()
     
     try:
+        from preflight import run_preflight
+        report = run_preflight(args.model_config, args.model_name, require_sycophancy=True)
+        print(json.dumps(report, indent=2))
+        if not report["environment_ok"]:
+            raise RuntimeError("Preflight failed; resolve the listed environment errors before starting a sweep")
+        if args.preflight_only:
+            return
+        from research_status import require_firm_implementation
+        require_firm_implementation()
         if args.robust:
             # Run robust multi-seed evaluation
             print("🔬 Running robust multi-seed evaluation...")
@@ -727,7 +738,7 @@ def main():
             print(f"📊 Robustness level: {args.robustness_level}")
             
             for model, result in results.items():
-                print(f"   {model}: {result.mean_bias_score:.4f} ± {result.std_bias_score:.4f}")
+                print(f"   {model}: {result.dataset_means}")
         
         else:
             # Run standard single-seed evaluation

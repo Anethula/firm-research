@@ -303,6 +303,7 @@ class UnifiedBiasEvaluator:
         
         # Run model evaluation based on dataset characteristics
         predictions = []
+        successful_sample_ids = []
         targets = []
         
         start_time = time.time()
@@ -345,6 +346,9 @@ class UnifiedBiasEvaluator:
                         sample, evaluation_mode, timeout=sample_timeout
                     )
                     
+                    import hashlib
+                    sample_id = hashlib.sha256(json.dumps(sample, sort_keys=True, default=str).encode()).hexdigest()
+                    successful_sample_ids.append(sample_id)
                     predictions.append(pred)
                     targets.append({
                         "target": target,
@@ -379,6 +383,11 @@ class UnifiedBiasEvaluator:
             else:
                 raise
         
+        if not predictions:
+            raise RuntimeError(f"{dataset_name}: no successful model predictions")
+        if not self.integration_config.get("skip_failed_datasets", True) and len(predictions) != len(prepared_samples):
+            raise RuntimeError(f"{dataset_name}: only {len(predictions)}/{len(prepared_samples)} predictions completed")
+
         # Compute dataset-specific metrics
         try:
             metrics = loader.compute_metrics(predictions, targets)
@@ -395,7 +404,9 @@ class UnifiedBiasEvaluator:
             return {
                 "dataset": dataset_name,
                 "metrics": metrics,
-                "predictions": predictions[:10] if len(predictions) > 10 else predictions,  # Sample predictions
+                "predictions": predictions,
+                "targets": targets,
+                "sample_ids": successful_sample_ids,
                 "metadata": {
                     "evaluation_mode": evaluation_mode,
                     "requires_generation": requires_generation,
@@ -407,13 +418,7 @@ class UnifiedBiasEvaluator:
             
         except Exception as e:
             print(f"Error computing metrics for {dataset_name}: {e}")
-            # Return basic results without dataset-specific metrics
-            return {
-                "dataset": dataset_name,
-                "metrics": {f"{dataset_name}_error": str(e)},
-                "predictions": predictions[:10] if predictions else [],
-                "metadata": {"error": True}
-            }
+            raise RuntimeError(f"Metrics failed for {dataset_name}: {e}") from e
     
     def _generate_prediction(self, model, tokenizer, text: str, sample: Dict[str, Any]) -> str:
         """Generate text prediction for generation-based evaluation."""
@@ -568,16 +573,9 @@ class UnifiedBiasEvaluator:
                                 last_hidden = outputs.hidden_states[-1]
                                 return last_hidden.mean(dim=1).squeeze().cpu().numpy()
                 except Exception as e:
-                    # Log the failure and use deterministic fallback
-                    print(f"Warning: Could not get embedding for '{word}': {e}")
-                    # Use deterministic hash-based embedding as fallback
-                    hash_val = hash(word) % 1000
-                    return np.array([hash_val / 1000.0] * 64)  # Simple 64-dim embedding
-                
-                # Should not reach here, but provide safe fallback
-                print(f"Warning: No embedding method worked for '{word}', using zero vector")
-                return np.zeros(64)
-            
+                    raise RuntimeError(f"Model embedding extraction failed: {e}") from e
+                raise RuntimeError("Model did not return usable hidden-state embeddings")
+
             def cosine_similarity(a, b):
                 """Calculate cosine similarity between two vectors."""
                 norm_a = np.linalg.norm(a)
@@ -675,6 +673,14 @@ class UnifiedBiasEvaluator:
                     raise
                 continue
         
+        if not all_results:
+            raise RuntimeError("No datasets evaluated successfully")
+        if not self.integration_config.get("skip_failed_datasets", True):
+            expected = {name for name in self.evaluation_suites[suite_name]["datasets"]
+                        if self.dataset_configs.get(name, {}).get("enabled", True)}
+            if set(all_results) != expected:
+                raise RuntimeError(f"Incomplete suite; missing datasets: {sorted(expected - set(all_results))}")
+
         # Compute dataset-specific analysis and aggregated metrics
         dataset_specific_analysis = self._generate_dataset_specific_analysis(all_results)
         aggregated_metrics = self._compute_aggregated_metrics(all_results)

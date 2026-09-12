@@ -27,14 +27,12 @@ def apply_pytorch_compilation_fixes():
     
     # 2. Increase recompile limits
     try:
-        torch._dynamo.config.cache_size_limit = 128
-        torch._dynamo.config.accumulated_cache_size_limit = 256
-        torch._dynamo.config.recompile_limit = 50  # Increase from default 8
-        torch._dynamo.config.suppress_errors = True
-        torch._dynamo.config.disable = True
-        
-        print(f"  ✓ Set torch._dynamo recompile_limit to {torch._dynamo.config.recompile_limit}")
-        print(f"  ✓ Set torch._dynamo cache_size_limit to {torch._dynamo.config.cache_size_limit}")
+        for key, value in {"cache_size_limit": 128,
+                           "accumulated_cache_size_limit": 256,
+                           "recompile_limit": 50, "suppress_errors": True,
+                           "disable": True}.items():
+            if hasattr(torch._dynamo.config, key):
+                setattr(torch._dynamo.config, key, value)
     except Exception as e:
         print(f"  ⚠ Could not configure torch._dynamo: {e}")
     
@@ -55,7 +53,6 @@ def apply_pytorch_compilation_fixes():
     
     # 5. Set torch compile mode to None/disable
     try:
-        torch.set_default_device('cpu')  # Reset device context
         if hasattr(torch, '_C') and hasattr(torch._C, '_set_compile_mode'):
             torch._C._set_compile_mode(False)
     except:

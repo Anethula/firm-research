@@ -151,8 +151,7 @@ class BaseDatasetLoader(ABC):
         """Sample data if sample_size is specified."""
         if sample_size is not None and len(data) > sample_size:
             import random
-            random.seed(42)  # For reproducibility
-            return random.sample(data, sample_size)
+            return random.Random(self.config.get("seed", 42)).sample(data, sample_size)
         return data
     
     def get_bias_types(self) -> List[BiasType]:

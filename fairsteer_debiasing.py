@@ -10,7 +10,12 @@ Optimized specifically for Google's Gemma-2-2b-it architecture
 # CRITICAL: Apply PyTorch compilation fixes BEFORE any other imports
 import sys
 import os
-sys.path.append('/workspace/Algoverse/unified_pipeline/utils')
+from pathlib import Path
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "unified_pipeline"))
+    from train_fairsteer import main
+    raise SystemExit(main())
+sys.path.append(str(Path(__file__).resolve().parent / "unified_pipeline/utils"))
 from pytorch_compilation_fix import apply_pytorch_compilation_fixes, disable_model_compilation
 apply_pytorch_compilation_fixes()
 
@@ -33,7 +38,8 @@ import pickle
 from collections import defaultdict
 
 # Import token utilities
-from gemma_token_utils import get_gemma_token, GEMMA_HUGGINGFACE_TOKEN
+from huggingface_hub import get_token as get_gemma_token
+GEMMA_HUGGINGFACE_TOKEN = None
 import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import List, Dict, Tuple, Any, Optional
@@ -1489,46 +1495,3 @@ def analyze_gender_bias(text: str) -> float:
     
     # Return bias score: positive = male-biased, negative = female-biased
     return (male_count - female_count) / total_gendered
-
-if __name__ == "__main__":
-    # Set your Hugging Face token here (required for Gemma access)
-    # You can also set it as an environment variable: HF_TOKEN
-    hf_token = os.getenv("HF_TOKEN", None)  # Set your token here or as env variable
-    
-    if hf_token is None:
-        print("Warning: No Hugging Face token provided!")
-        # Uncomment and add your token:
-        # hf_token = "your_hf_token_here"
-    
-    try:
-        # Run main demo
-        debiaser = main_fairsteer_demo(hf_token=hf_token)
-        
-        # Evaluate on WinoBias
-        winobias_results = evaluate_fairsteer_on_winobias(debiaser)
-        
-    except Exception as e:
-        print(f"Error: {e}")
-
-if __name__ == "__main__":
-    # Set your Hugging Face token here (required for Gemma access)
-    # You can also set it as an environment variable: HF_TOKEN
-    hf_token = os.getenv("HF_TOKEN", None)  # Set your token here or as env variable
-    
-    if hf_token is None:
-        print("Warning: No Hugging Face token provided!")
-        # Uncomment and add your token:
-        # hf_token = "your_hf_token_here"
-    
-    try:
-        # Run main demo
-        debiaser = main_fairsteer_demo(hf_token=hf_token)
-        
-        # Evaluate on WinoBias with comprehensive evaluation
-        winobias_results = evaluate_fairsteer_on_winobias(debiaser, sample_size=200)
-        
-        print("\nFairSteer evaluation completed successfully!")
-        print("Check the generated CSV files for detailed results.")
-        
-    except Exception as e:
-        print(f"Error: {e}")

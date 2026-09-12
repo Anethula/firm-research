@@ -274,6 +274,8 @@ class BiasRobustnessMonitor:
         Returns:
             Longitudinal drift analysis results
         """
+        raise NotImplementedError('Longitudinal drift requires loading distinct training checkpoints and remeasuring probes; repeated baseline counts are not evidence of persistence.')
+
         print("📈 " + "="*60)
         print("   🔍 LONGITUDINAL BIAS DRIFT TRACKING")
         print("📈 " + "="*60)

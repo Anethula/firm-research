@@ -176,6 +176,9 @@ class ModelAgnosticFairSteer:
             attn_implementation="eager"
         )
         
+        if self.device != "cuda":
+            model = model.to(self.device)
+        model.eval()
         return model, tokenizer
     
     def compute_steering_vectors(self, bias_pairs: List[Tuple[str, str]], 
@@ -206,23 +209,20 @@ class ModelAgnosticFairSteer:
             biased_activations = []
             neutral_activations = []
             
-            for biased_text, neutral_text in bias_pairs[:50]:  # Use subset for speed
-                # Get biased activations
+            for biased_text, neutral_text in bias_pairs:
                 biased_acts = self._get_layer_activations(biased_text, layer_idx)
-                if biased_acts is not None:
-                    biased_activations.append(biased_acts.cpu())
-                
-                # Get neutral activations
                 neutral_acts = self._get_layer_activations(neutral_text, layer_idx)
-                if neutral_acts is not None:
-                    neutral_activations.append(neutral_acts.cpu())
-            
+                if biased_acts is None or neutral_acts is None:
+                    raise RuntimeError(f"Could not collect both sides of a contrastive pair at layer {layer_idx}")
+                biased_activations.append(biased_acts.cpu())
+                neutral_activations.append(neutral_acts.cpu())
+
             if biased_activations and neutral_activations:
                 # Compute steering vector as difference of means
                 biased_mean = torch.stack(biased_activations).mean(dim=0)
                 neutral_mean = torch.stack(neutral_activations).mean(dim=0)
                 
-                steering_vector = biased_mean - neutral_mean
+                steering_vector = neutral_mean - biased_mean
                 steering_vectors[layer_idx] = steering_vector
                 
                 print(f"✓ Layer {layer_idx}: steering vector shape {steering_vector.shape}")
@@ -264,10 +264,11 @@ class ModelAgnosticFairSteer:
                 handle = layer_module.register_forward_hook(hook_fn)
                 
                 # Forward pass
-                with torch.no_grad():
-                    _ = self.model(**inputs)
-                
-                handle.remove()
+                try:
+                    with torch.no_grad():
+                        _ = self.model(**inputs)
+                finally:
+                    handle.remove()
                 
                 return activations.get('hidden')
             
@@ -294,6 +295,9 @@ class ModelAgnosticFairSteer:
         """Save steering vectors to file."""
         output_data = {
             'model_name': self.model_name,
+            'vector_convention': 'neutral_minus_biased',
+            'hook_location': 'decoder_residual_output',
+            'artifact_metadata': getattr(self, 'artifact_metadata', {}),
             'architecture': self.config.architecture,
             'steering_vectors': {k: v.cpu().numpy() for k, v in self.steering_vectors.items()},
             'optimal_layer': self.optimal_layer,

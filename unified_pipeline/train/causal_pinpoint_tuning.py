@@ -254,71 +254,8 @@ class CausalPinpointTuner(UnifiedPinpointTuner):
         )
     
     def run_causal_training(self) -> str:
-        """
-        Run FIRM-enhanced pinpoint tuning with causal component targeting.
-        
-        Returns:
-            Output directory path
-        """
-        print("🧠 " + "="*60)
-        print("   🔧 FIRM PHASE 2B: CAUSAL PINPOINT TUNING")
-        print("🧠 " + "="*60)
-        
-        # Prepare training arguments
-        training_args = self.prepare_training_arguments()
-        output_dir = training_args['output_dir']
-        
-        # Create output directory
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Step 1: Identify causal circuits
-        if not self.causal_circuits:
-            self.identify_causal_circuits(output_dir)
-        
-        # Step 2: Select components based on causal analysis
-        self._select_causal_components()
-        
-        # Step 3: Create causal LoRA configuration
-        lora_config = self.create_causal_lora_config()
-        
-        # Step 4: Load and prepare model
-        print(f"\n🔄 Loading model: {self.model_name}")
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-        
-        model = AutoModelForCausalLM.from_pretrained(
-            self.model_name,
-            torch_dtype=getattr(torch, training_args['torch_dtype']),
-            device_map="auto" if torch.cuda.is_available() else None,
-            trust_remote_code=training_args['trust_remote_code']
-        )
-        
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        
-        # Step 5: Initialize circuit tracer with loaded model (if not already done)
-        if not self.circuit_tracer:
-            self.initialize_circuit_tracer(model, tokenizer)
-        
-        # Step 6: Apply causal LoRA
-        print("🔧 Applying causal LoRA configuration...")
-        model = get_peft_model(model, lora_config)
-        model.print_trainable_parameters()
-        
-        # Step 7: Save training metadata
-        self._save_causal_training_metadata(output_dir)
-        
-        # Step 8: Save model and tokenizer (training simulation for now)
-        print("💾 Saving causally-configured model...")
-        model.save_pretrained(output_dir)
-        tokenizer.save_pretrained(output_dir)
-        
-        print(f"\n✅ CAUSAL PINPOINT TUNING COMPLETE")
-        print(f"   📁 Model saved to: {output_dir}")
-        print(f"   🎯 Targeted {len(self.selected_components)} causal components")
-        print(f"   🧠 Used {len(self.causal_circuits)} bias circuits for selection")
-        
-        return output_dir
+        from research_status import require_firm_implementation
+        require_firm_implementation()
     
     def _save_causal_training_metadata(self, output_dir: str) -> None:
         """Save FIRM-specific training metadata."""
